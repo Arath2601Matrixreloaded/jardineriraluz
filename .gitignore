@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Streamlit cache/temp
+.streamlit/
+
+# App data (no subir)
+capturas/
+fotos_rostro/
+sistema.db
