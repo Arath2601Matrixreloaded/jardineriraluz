@@ -6,6 +6,7 @@ import numpy as np
 import time
 import random
 import base64
+import requests
 from datetime import datetime
 
 DB_PATH = "sistema.db"
@@ -15,80 +16,153 @@ FOTOS_ROSTRO_DIR = "fotos_rostro"
 # --------------------------
 # Inicialización de BD
 # --------------------------
+def get_conn():
+    dsn = None
+    try:
+        dsn = st.secrets.get("postgres_url")
+    except Exception:
+        dsn = os.getenv("POSTGRES_URL")
+    if dsn:
+        import psycopg2
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        return conn, "pg"
+    return sqlite3.connect(DB_PATH), "sqlite"
+
+def _q(engine, sql):
+    return sql.replace("?", "%s") if engine == "pg" else sql
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn, engine = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS usuarios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE,
-        password TEXT,
-        rol TEXT,
-        foto_rostro TEXT
-    )""")
+    if engine == "sqlite":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT,
+            rol TEXT,
+            foto_rostro TEXT
+        )""")
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE,
+            password TEXT,
+            rol TEXT,
+            foto_rostro TEXT
+        )""")
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS historial (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fecha TEXT NOT NULL,
-        usuario TEXT NOT NULL,
-        accion TEXT NOT NULL,
-        detalles TEXT
-    )""")
+    if engine == "sqlite":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS historial (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha TEXT NOT NULL,
+            usuario TEXT NOT NULL,
+            accion TEXT NOT NULL,
+            detalles TEXT
+        )""")
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS historial (
+            id SERIAL PRIMARY KEY,
+            fecha TEXT NOT NULL,
+            usuario TEXT NOT NULL,
+            accion TEXT NOT NULL,
+            detalles TEXT
+        )""")
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS imagenes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ruta TEXT NOT NULL,
-        fecha TEXT NOT NULL,
-        usuario TEXT
-    )""")
+    if engine == "sqlite":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS imagenes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ruta TEXT NOT NULL,
+            fecha TEXT NOT NULL,
+            usuario TEXT
+        )""")
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS imagenes (
+            id SERIAL PRIMARY KEY,
+            ruta TEXT NOT NULL,
+            fecha TEXT NOT NULL,
+            usuario TEXT
+        )""")
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS eventos_luz (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fecha TEXT NOT NULL,
-        accion TEXT NOT NULL,
-        usuario TEXT
-    )""")
+    if engine == "sqlite":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS eventos_luz (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha TEXT NOT NULL,
+            accion TEXT NOT NULL,
+            usuario TEXT
+        )""")
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS eventos_luz (
+            id SERIAL PRIMARY KEY,
+            fecha TEXT NOT NULL,
+            accion TEXT NOT NULL,
+            usuario TEXT
+        )""")
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS eventos_alerta (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fecha TEXT NOT NULL,
-        tipo TEXT NOT NULL,
-        descripcion TEXT,
-        usuario TEXT
-    )""")
+    if engine == "sqlite":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS eventos_alerta (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha TEXT NOT NULL,
+            tipo TEXT NOT NULL,
+            descripcion TEXT,
+            usuario TEXT
+        )""")
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS eventos_alerta (
+            id SERIAL PRIMARY KEY,
+            fecha TEXT NOT NULL,
+            tipo TEXT NOT NULL,
+            descripcion TEXT,
+            usuario TEXT
+        )""")
 
     # Asegurar columna foto_rostro en BD existente
-    try:
-        cols = [c[1] for c in cur.execute("PRAGMA table_info(usuarios)").fetchall()]
-        if "foto_rostro" not in cols:
-            cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
-    except sqlite3.OperationalError:
-        pass
+    if engine == "sqlite":
+        try:
+            cols = [c[1] for c in cur.execute("PRAGMA table_info(usuarios)").fetchall()]
+            if "foto_rostro" not in cols:
+                cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
+        except sqlite3.OperationalError:
+            pass
 
     # Usuarios de prueba
-    cur.execute("INSERT OR IGNORE INTO usuarios (username, password, rol) VALUES (?, ?, ?)",
-                ("admin", "1234", "Administrador"))
-    cur.execute("INSERT OR IGNORE INTO usuarios (username, password, rol) VALUES (?, ?, ?)",
-                ("cliente", "abcd", "Usuario"))
+    if engine == "sqlite":
+        cur.execute("INSERT OR IGNORE INTO usuarios (username, password, rol) VALUES (?, ?, ?)",
+                    ("admin", "1234", "Administrador"))
+        cur.execute("INSERT OR IGNORE INTO usuarios (username, password, rol) VALUES (?, ?, ?)",
+                    ("cliente", "abcd", "Usuario"))
+    else:
+        cur.execute(_q(engine, "INSERT INTO usuarios (username, password, rol) VALUES (?, ?, ?) ON CONFLICT (username) DO NOTHING"),
+                    ("admin", "1234", "Administrador"))
+        cur.execute(_q(engine, "INSERT INTO usuarios (username, password, rol) VALUES (?, ?, ?) ON CONFLICT (username) DO NOTHING"),
+                    ("cliente", "abcd", "Usuario"))
 
-    conn.commit()
+    if engine == "sqlite":
+        conn.commit()
     conn.close()
 
 # --------------------------
 # Helpers
 # --------------------------
 def guardar_evento(usuario, accion, detalles=""):
-    conn = sqlite3.connect(DB_PATH)
+    conn, engine = get_conn()
     cur = conn.cursor()
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur.execute("INSERT INTO historial (fecha, usuario, accion, detalles) VALUES (?, ?, ?, ?)",
+    cur.execute(_q(engine, "INSERT INTO historial (fecha, usuario, accion, detalles) VALUES (?, ?, ?, ?)"),
                 (fecha, usuario, accion, detalles))
-    conn.commit()
+    if engine == "sqlite":
+        conn.commit()
     conn.close()
 
 def guardar_imagen(img_bgr, usuario=None):
@@ -98,14 +172,14 @@ def guardar_imagen(img_bgr, usuario=None):
     filename = f"{CAPTURAS_DIR}/captura_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
     cv2.imwrite(filename, img_bgr)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn, engine = get_conn()
     cur = conn.cursor()
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    cur.execute("INSERT INTO imagenes (ruta, fecha, usuario) VALUES (?, ?, ?)",
+    cur.execute(_q(engine, "INSERT INTO imagenes (ruta, fecha, usuario) VALUES (?, ?, ?)"),
                 (filename, fecha, usuario))
-
-    conn.commit()
+    if engine == "sqlite":
+        conn.commit()
     conn.close()
     guardar_evento(usuario or "sistema", "Captura de imagen", filename)
     return filename
@@ -183,10 +257,10 @@ def _compare_histogram(imgA_bgr, imgB_bgr):
     return float(score)
 
 def comparar_rostro_con_perfil(username, img_bytes, umbral=0.0):
-    conn = sqlite3.connect(DB_PATH)
+    conn, engine = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT foto_rostro FROM usuarios WHERE username=?", (username,))
+        cur.execute(_q(engine, "SELECT foto_rostro FROM usuarios WHERE username=?"), (username,))
         row = cur.fetchone()
         ruta_db = row[0] if row and row[0] else None
     except sqlite3.OperationalError:
@@ -233,12 +307,13 @@ def guardar_imagen_bytes(img_bytes, usuario=None):
     filename = f"{CAPTURAS_DIR}/captura_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
     with open(filename, "wb") as f:
         f.write(img_bytes)
-    conn = sqlite3.connect(DB_PATH)
+    conn, engine = get_conn()
     cur = conn.cursor()
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur.execute("INSERT INTO imagenes (ruta, fecha, usuario) VALUES (?, ?, ?)",
+    cur.execute(_q(engine, "INSERT INTO imagenes (ruta, fecha, usuario) VALUES (?, ?, ?)"),
                 (filename, fecha, usuario))
-    conn.commit()
+    if engine == "sqlite":
+        conn.commit()
     conn.close()
     guardar_evento(usuario or "sistema", "Captura de imagen", filename)
     return filename
@@ -249,55 +324,45 @@ def guardar_foto_perfil_bytes(username, img_bytes):
     ruta = f"{FOTOS_ROSTRO_DIR}/{username}_rostro.jpg"
     with open(ruta, "wb") as f:
         f.write(img_bytes)
-    conn = sqlite3.connect(DB_PATH)
+    conn, engine = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("UPDATE usuarios SET foto_rostro=? WHERE username=?", (ruta, username))
+        cur.execute(_q(engine, "UPDATE usuarios SET foto_rostro=? WHERE username=?"), (ruta, username))
     except sqlite3.OperationalError:
         try:
-            cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
-            conn.commit()
-            cur.execute("UPDATE usuarios SET foto_rostro=? WHERE username=?", (ruta, username))
-        except sqlite3.OperationalError:
+            if engine == "sqlite":
+                cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
+                conn.commit()
+                cur.execute(_q(engine, "UPDATE usuarios SET foto_rostro=? WHERE username=?"), (ruta, username))
+        except Exception:
             pass
-    conn.commit()
+    if engine == "sqlite":
+        conn.commit()
     conn.close()
     guardar_evento(username, "Actualizó su foto de rostro", ruta)
     return ruta
 
-def guardar_imagen_bytes(img_bytes, usuario=None):
-    if not os.path.exists(CAPTURAS_DIR):
-        os.makedirs(CAPTURAS_DIR)
-    filename = f"{CAPTURAS_DIR}/captura_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-    with open(filename, "wb") as f:
-        f.write(img_bytes)
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur.execute("INSERT INTO imagenes (ruta, fecha, usuario) VALUES (?, ?, ?)",
-                (filename, fecha, usuario))
-    conn.commit()
-    conn.close()
-    guardar_evento(usuario or "sistema", "Captura de imagen", filename)
-    return filename
+# duplicado eliminado: usar la versión superior con soporte de DB externa
 
 def registrar_evento_luz(usuario, accion):
-    conn = sqlite3.connect(DB_PATH)
+    conn, engine = get_conn()
     cur = conn.cursor()
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur.execute("INSERT INTO eventos_luz (fecha, accion, usuario) VALUES (?, ?, ?)",
+    cur.execute(_q(engine, "INSERT INTO eventos_luz (fecha, accion, usuario) VALUES (?, ?, ?)"),
                 (fecha, accion, usuario))
-    conn.commit()
+    if engine == "sqlite":
+        conn.commit()
     conn.close()
     guardar_evento(usuario, f"Luz - {accion}", "")
 
 def registrar_alerta(usuario, tipo, descripcion):
-    conn = sqlite3.connect(DB_PATH)
+    conn, engine = get_conn()
     cur = conn.cursor()
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur.execute("INSERT INTO eventos_alerta (fecha, tipo, descripcion, usuario) VALUES (?, ?, ?, ?)",
+    cur.execute(_q(engine, "INSERT INTO eventos_alerta (fecha, tipo, descripcion, usuario) VALUES (?, ?, ?, ?)"),
                 (fecha, tipo, descripcion, usuario))
-    conn.commit()
+    if engine == "sqlite":
+        conn.commit()
     conn.close()
     guardar_evento(usuario, f"Alerta - {tipo}", descripcion)
 
@@ -305,10 +370,10 @@ def registrar_alerta(usuario, tipo, descripcion):
 # Autenticación
 # --------------------------
 def login(username, password):
-    conn = sqlite3.connect(DB_PATH)
+    conn, engine = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT rol FROM usuarios WHERE username=? AND password=?", (username, password))
+    cur.execute(_q(engine, "SELECT rol FROM usuarios WHERE username=? AND password=?"), (username, password))
     res = cur.fetchone()
 
     conn.close()
@@ -320,26 +385,28 @@ def login(username, password):
 def perfil_usuario(username):
     st.header("Mi Perfil")
 
-    conn = sqlite3.connect(DB_PATH)
+    conn, engine = get_conn()
     cur = conn.cursor()
 
     try:
-        cols = [c[1] for c in cur.execute("PRAGMA table_info(usuarios)").fetchall()]
-        if "foto_rostro" not in cols:
-            cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
-            conn.commit()
+        if engine == "sqlite":
+            cols = [c[1] for c in cur.execute("PRAGMA table_info(usuarios)").fetchall()]
+            if "foto_rostro" not in cols:
+                cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
+                conn.commit()
     except sqlite3.OperationalError:
         pass
 
     try:
-        cur.execute("SELECT foto_rostro FROM usuarios WHERE username=?", (username,))
+        cur.execute(_q(engine, "SELECT foto_rostro FROM usuarios WHERE username=?"), (username,))
         data = cur.fetchone()
         foto_actual = data[0] if data else None
     except sqlite3.OperationalError:
         try:
-            cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
-            conn.commit()
-            cur.execute("SELECT foto_rostro FROM usuarios WHERE username=?", (username,))
+            if engine == "sqlite":
+                cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
+                conn.commit()
+            cur.execute(_q(engine, "SELECT foto_rostro FROM usuarios WHERE username=?"), (username,))
             data = cur.fetchone()
             foto_actual = data[0] if data else None
         except sqlite3.OperationalError:
@@ -372,18 +439,20 @@ def perfil_usuario(username):
         with open(ruta, "wb") as f:
             f.write(nueva_foto.read())
 
-        conn = sqlite3.connect(DB_PATH)
+        conn, engine = get_conn()
         cur = conn.cursor()
         try:
-            cur.execute("UPDATE usuarios SET foto_rostro=? WHERE username=?", (ruta, username))
+            cur.execute(_q(engine, "UPDATE usuarios SET foto_rostro=? WHERE username=?"), (ruta, username))
         except sqlite3.OperationalError:
             try:
-                cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
-                conn.commit()
-                cur.execute("UPDATE usuarios SET foto_rostro=? WHERE username=?", (ruta, username))
+                if engine == "sqlite":
+                    cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
+                    conn.commit()
+                cur.execute(_q(engine, "UPDATE usuarios SET foto_rostro=? WHERE username=?"), (ruta, username))
             except sqlite3.OperationalError:
                 pass
-        conn.commit()
+        if engine == "sqlite":
+            conn.commit()
         conn.close()
 
         guardar_evento(username, "Actualizó su foto de rostro", ruta)
@@ -402,7 +471,7 @@ def perfil_usuario(username):
 def mostrar_historial():
     st.header("Historial de actividades")
     import pandas as pd
-    conn = sqlite3.connect(DB_PATH)
+    conn, _ = get_conn()
     df = pd.read_sql_query("SELECT fecha, usuario, accion, detalles FROM historial ORDER BY fecha DESC", conn)
     conn.close()
 
@@ -441,7 +510,7 @@ def controlar_luces(usuario):
     st.divider()
     st.subheader("Eventos recientes")
     import pandas as pd
-    conn = sqlite3.connect(DB_PATH)
+    conn, _ = get_conn()
     df = pd.read_sql_query("SELECT fecha, accion, usuario FROM eventos_luz ORDER BY fecha DESC LIMIT 10", conn)
     conn.close()
     st.dataframe(df, width='stretch')
@@ -456,6 +525,22 @@ def simular_alerta(usuario):
         registrar_alerta(usuario, tipo, descripcion)
         nivel = "alerta" if tipo == "Intruso" else ("error" if tipo == "Sensor fallo" else "warn")
         notificar(f"{tipo}", nivel)
+        token = None
+        chat_id = None
+        try:
+            token = st.secrets.get("telegram_token")
+            chat_id = st.secrets.get("telegram_chat_id")
+        except Exception:
+            pass
+        if not token or not chat_id:
+            token = os.getenv("TELEGRAM_TOKEN")
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if token and chat_id:
+            try:
+                url = f"https://api.telegram.org/bot{token}/sendMessage"
+                requests.post(url, data={"chat_id": chat_id, "text": f"Alerta: {tipo} - {descripcion if descripcion else ''}"}, timeout=10)
+            except Exception:
+                pass
 
     st.divider()
     st.subheader("Simulación automática")
@@ -472,6 +557,30 @@ def simular_alerta(usuario):
         st.session_state.alert_sound = False
     opt1.toggle("Mostrar notificación en sidebar", value=st.session_state.alert_show_sidebar, key="alert_show_sidebar")
     opt2.toggle("Sonido", value=st.session_state.alert_sound, key="alert_sound")
+    if st.button("Probar Telegram"):
+        token = st.session_state.get("telegram_token")
+        chat_id = st.session_state.get("telegram_chat_id")
+        if not token or not chat_id:
+            try:
+                token = token or st.secrets.get("telegram_token")
+                chat_id = chat_id or st.secrets.get("telegram_chat_id")
+            except Exception:
+                pass
+        if not token or not chat_id:
+            token = os.getenv("TELEGRAM_TOKEN")
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not token or not chat_id:
+            st.warning("Configura telegram_token y telegram_chat_id en Secrets o variables de entorno.")
+        else:
+            try:
+                url = f"https://api.telegram.org/bot{token}/sendMessage"
+                r = requests.post(url, data={"chat_id": chat_id, "text": "Prueba de Telegram desde la app"}, timeout=10)
+                if r.status_code == 200:
+                    st.success("Prueba enviada a Telegram")
+                else:
+                    st.error(f"No se pudo enviar (status {r.status_code})")
+            except Exception:
+                st.error("Error al enviar a Telegram")
     col1, col2 = st.columns([2,1])
     intervalo = col1.number_input("Intervalo (segundos)", min_value=5, max_value=3600, value=int(st.session_state.alert_interval), step=5)
     if int(intervalo) != st.session_state.alert_interval:
@@ -493,13 +602,30 @@ def simular_alerta(usuario):
             registrar_alerta(usuario, tipo_auto, f"{zona} - simulado")
             nivel = "alerta" if tipo_auto == "Intruso" else ("error" if tipo_auto == "Sensor fallo" else "warn")
             notificar(f"{tipo_auto} en {zona}", nivel)
+            token = st.session_state.get("telegram_token")
+            chat_id = st.session_state.get("telegram_chat_id")
+            if not token or not chat_id:
+                try:
+                    token = token or st.secrets.get("telegram_token")
+                    chat_id = chat_id or st.secrets.get("telegram_chat_id")
+                except Exception:
+                    pass
+            if not token or not chat_id:
+                token = os.getenv("TELEGRAM_TOKEN")
+                chat_id = os.getenv("TELEGRAM_CHAT_ID")
+            if token and chat_id:
+                try:
+                    url = f"https://api.telegram.org/bot{token}/sendMessage"
+                    requests.post(url, data={"chat_id": chat_id, "text": f"Alerta automática: {tipo_auto} en {zona}"}, timeout=10)
+                except Exception:
+                    pass
             st.session_state.next_alert_ts = time.time() + st.session_state.alert_interval
         time.sleep(1)
         st.rerun()
 
     st.divider()
     import pandas as pd
-    conn = sqlite3.connect(DB_PATH)
+    conn, _ = get_conn()
     df = pd.read_sql_query("SELECT fecha, tipo, descripcion FROM eventos_alerta ORDER BY fecha DESC LIMIT 10", conn)
     conn.close()
     st.dataframe(df, width='stretch')
@@ -539,6 +665,23 @@ def camara_interface(usuario):
 def main():
     st.set_page_config(page_title="Sistema Inteligente - Jardín", layout="wide")
     init_db()
+
+    if "telegram_token" not in st.session_state:
+        tk = None
+        cid = None
+        try:
+            tk = st.secrets.get("telegram_token")
+            cid = st.secrets.get("telegram_chat_id")
+        except Exception:
+            pass
+        if not tk:
+            tk = os.getenv("TELEGRAM_TOKEN")
+        if not cid:
+            cid = os.getenv("TELEGRAM_CHAT_ID")
+        if tk:
+            st.session_state.telegram_token = tk
+        if cid:
+            st.session_state.telegram_chat_id = cid
 
     st.title("Sistema Inteligente de Iluminación y Seguridad")
 
@@ -615,10 +758,10 @@ def main():
     # Menú lateral
     st.sidebar.write(f"**Usuario:** {st.session_state.usuario}")
     st.sidebar.write(f"**Rol:** {st.session_state.rol}")
-    conn = sqlite3.connect(DB_PATH)
+    conn, engine = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT foto_rostro FROM usuarios WHERE username=?", (st.session_state.usuario,))
+        cur.execute(_q(engine, "SELECT foto_rostro FROM usuarios WHERE username=?"), (st.session_state.usuario,))
         row = cur.fetchone()
         foto_sidebar = row[0] if row and row[0] else None
     except sqlite3.OperationalError:
