@@ -509,38 +509,16 @@ def perfil_usuario(username):
         foto_cam = st.camera_input("Tomar foto para perfil", key="perfil_cam_input")
 
     if nueva_foto:
-        if not os.path.exists(FOTOS_ROSTRO_DIR):
-            os.makedirs(FOTOS_ROSTRO_DIR)
-
-        ruta = f"{FOTOS_ROSTRO_DIR}/{username}_rostro.jpg"
-        with open(ruta, "wb") as f:
-            f.write(nueva_foto.read())
-
-        conn, engine = get_conn()
-        cur = conn.cursor()
-        try:
-            cur.execute(_q(engine, "UPDATE usuarios SET foto_rostro=? WHERE username=?"), (ruta, username))
-        except sqlite3.OperationalError:
-            try:
-                if engine == "sqlite":
-                    cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
-                    conn.commit()
-                cur.execute(_q(engine, "UPDATE usuarios SET foto_rostro=? WHERE username=?"), (ruta, username))
-            except sqlite3.OperationalError:
-                pass
-        if engine == "sqlite":
-            conn.commit()
-        conn.close()
-
-        guardar_evento(username, "Actualizó su foto de rostro", ruta)
-
+        img_bytes = nueva_foto.getvalue()
+        ruta = guardar_foto_perfil_bytes(username, img_bytes)
         st.success("Foto guardada exitosamente.")
-        st.image(ruta, width=250)
+        st.image(img_bytes, width=250)
 
     if foto_cam is not None:
-        ruta = guardar_foto_perfil_bytes(username, foto_cam.getvalue())
+        img_bytes = foto_cam.getvalue()
+        ruta = guardar_foto_perfil_bytes(username, img_bytes)
         st.success("Foto guardada exitosamente.")
-        st.image(ruta, width=250)
+        st.image(img_bytes, width=250)
 
 # --------------------------
 # Interfaces UI
