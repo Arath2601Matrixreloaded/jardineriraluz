@@ -221,27 +221,27 @@ def guardar_evento(usuario, accion, detalles=""):
     conn.close()
 
 def guardar_imagen(img_bgr, usuario=None):
-    if not os.path.exists(CAPTURAS_DIR):
-        os.makedirs(CAPTURAS_DIR)
-
-    filename = f"{CAPTURAS_DIR}/captura_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-    cv2.imwrite(filename, img_bgr)
-
     conn, engine = get_conn()
     cur = conn.cursor()
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+    filename = None
+    img_bytes = cv2.imencode('.jpg', img_bgr)[1].tobytes()
+    if engine == "sqlite":
+        if not os.path.exists(CAPTURAS_DIR):
+            os.makedirs(CAPTURAS_DIR)
+        filename = f"{CAPTURAS_DIR}/captura_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+        cv2.imwrite(filename, img_bgr)
     try:
         cur.execute(_q(engine, "INSERT INTO imagenes (ruta, fecha, usuario, data) VALUES (?, ?, ?, ?)"),
-                    (filename, fecha, usuario, None))
+                    (filename, fecha, usuario, sqlite3.Binary(img_bytes) if engine == "sqlite" else img_bytes))
     except Exception:
         cur.execute(_q(engine, "INSERT INTO imagenes (ruta, fecha, usuario) VALUES (?, ?, ?)"),
                     (filename, fecha, usuario))
     if engine == "sqlite":
         conn.commit()
     conn.close()
-    guardar_evento(usuario or "sistema", "Captura de imagen", filename)
-    return filename
+    guardar_evento(usuario or "sistema", "Captura de imagen", filename or "bytes")
+    return filename or "bytes"
 
 def notificar(msg, tipo="info"):
     toast = getattr(st, "toast", None)
@@ -765,6 +765,12 @@ def main():
         </style>
     """, unsafe_allow_html=True)
     st.title("Luminest")
+    try:
+        c, eng = get_conn()
+        c.close()
+        st.caption(f"Almacenamiento: {'Postgres' if eng == 'pg' else 'SQLite'}")
+    except Exception:
+        st.caption("Almacenamiento: SQLite")
 
     if "usuario" not in st.session_state:
         st.session_state.usuario = None
