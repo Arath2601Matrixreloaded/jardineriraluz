@@ -48,9 +48,12 @@ def get_conn():
     if dsn:
         try:
             import psycopg2
+            d = dsn
+            if "channel_binding=" in d:
+                d = d.replace("channel_binding=require", "").replace("&&", "&").replace("?&", "?").rstrip("&?")
             if "sslmode=" not in dsn:
-                dsn = (dsn + "&sslmode=require") if ("?" in dsn) else (dsn + "?sslmode=require")
-            conn = psycopg2.connect(dsn)
+                d = (d + "&sslmode=require") if ("?" in d) else (d + "?sslmode=require")
+            conn = psycopg2.connect(d)
             conn.autocommit = True
             return conn, "pg"
         except Exception:
@@ -736,7 +739,7 @@ def camara_interface(usuario):
 # App principal
 # --------------------------
 def main():
-    st.set_page_config(page_title="Sistema Inteligente - Jardín", layout="wide")
+    st.set_page_config(page_title="Luminest", layout="wide")
     init_db()
 
     if "telegram_token" not in st.session_state:
@@ -756,7 +759,12 @@ def main():
         if cid:
             st.session_state.telegram_chat_id = cid
 
-    st.title("Sistema Inteligente de Iluminación y Seguridad")
+    st.markdown("""
+        <style>
+        .stApp h1 { margin-bottom: 0.5rem; }
+        </style>
+    """, unsafe_allow_html=True)
+    st.title("Luminest")
 
     if "usuario" not in st.session_state:
         st.session_state.usuario = None
