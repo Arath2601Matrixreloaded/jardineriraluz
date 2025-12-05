@@ -734,6 +734,35 @@ def camara_interface(usuario):
                 cap.release()
             else:
                 st.error("No se pudo abrir la cámara. Revisa permisos y dispositivo.")
+    st.divider()
+    st.subheader("Galería reciente")
+    conn, engine = get_conn()
+    cur = conn.cursor()
+    try:
+        if usuario:
+            cur.execute(_q(engine, "SELECT ruta, data, fecha, usuario FROM imagenes WHERE usuario=? ORDER BY fecha DESC LIMIT ?"), (usuario, 12))
+        else:
+            cur.execute(_q(engine, "SELECT ruta, data, fecha, usuario FROM imagenes ORDER BY fecha DESC LIMIT ?"), (12,))
+        rows = cur.fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    cols = st.columns(3)
+    for i, row in enumerate(rows):
+        ruta, data, fecha, usr = row
+        with cols[i % 3]:
+            img_bytes = None
+            if data is not None:
+                try:
+                    img_bytes = data if isinstance(data, (bytes, bytearray)) else (data.tobytes() if hasattr(data, 'tobytes') else None)
+                except Exception:
+                    img_bytes = None
+            if img_bytes:
+                st.image(img_bytes, caption=f"{usr or ''} • {fecha}", use_column_width=True)
+            elif ruta and os.path.exists(ruta):
+                st.image(ruta, caption=f"{usr or ''} • {fecha}", use_column_width=True)
+            else:
+                st.caption(f"Sin imagen • {fecha}")
 
 # --------------------------
 # App principal
