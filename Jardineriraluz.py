@@ -19,14 +19,42 @@ FOTOS_ROSTRO_DIR = "fotos_rostro"
 def get_conn():
     dsn = None
     try:
-        dsn = st.secrets.get("postgres_url")
+        sec = st.secrets
+        dsn = sec.get("postgres_url")
+        if not dsn:
+            pg = sec.get("postgres")
+            if pg:
+                host = pg.get("host")
+                db = pg.get("dbname") or pg.get("db") or pg.get("database")
+                user = pg.get("user") or pg.get("username")
+                pwd = pg.get("password")
+                port = str(pg.get("port") or 5432)
+                sslmode = pg.get("sslmode") or "require"
+                if host and db and user and pwd:
+                    dsn = f"postgresql://{user}:{pwd}@{host}:{port}/{db}?sslmode={sslmode}"
     except Exception:
+        pass
+    if not dsn:
         dsn = os.getenv("POSTGRES_URL")
+        if not dsn:
+            host = os.getenv("POSTGRES_HOST")
+            db = os.getenv("POSTGRES_DB")
+            user = os.getenv("POSTGRES_USER")
+            pwd = os.getenv("POSTGRES_PASSWORD")
+            port = os.getenv("POSTGRES_PORT") or "5432"
+            sslmode = os.getenv("POSTGRES_SSLMODE") or "require"
+            if host and db and user and pwd:
+                dsn = f"postgresql://{user}:{pwd}@{host}:{port}/{db}?sslmode={sslmode}"
     if dsn:
-        import psycopg2
-        conn = psycopg2.connect(dsn)
-        conn.autocommit = True
-        return conn, "pg"
+        try:
+            import psycopg2
+            if "sslmode=" not in dsn:
+                dsn = (dsn + "&sslmode=require") if ("?" in dsn) else (dsn + "?sslmode=require")
+            conn = psycopg2.connect(dsn)
+            conn.autocommit = True
+            return conn, "pg"
+        except Exception:
+            st.warning("No se pudo conectar a Postgres; se usará SQLite local.")
     return sqlite3.connect(DB_PATH), "sqlite"
 
 def _q(engine, sql):
@@ -43,8 +71,15 @@ def init_db():
             username TEXT UNIQUE,
             password TEXT,
             rol TEXT,
-            foto_rostro TEXT
+            foto_rostro TEXT,
+            foto_data BLOB
         )""")
+        try:
+            cols = [c[1] for c in cur.execute("PRAGMA table_info(usuarios)").fetchall()]
+            if "foto_data" not in cols:
+                cur.execute("ALTER TABLE usuarios ADD COLUMN foto_data BLOB")
+        except sqlite3.OperationalError:
+            pass
     else:
         cur.execute("""
         CREATE TABLE IF NOT EXISTS usuarios (
@@ -52,8 +87,13 @@ def init_db():
             username TEXT UNIQUE,
             password TEXT,
             rol TEXT,
-            foto_rostro TEXT
+            foto_rostro TEXT,
+            foto_data BYTEA
         )""")
+        try:
+            cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS foto_data BYTEA")
+        except Exception:
+            pass
 
     if engine == "sqlite":
         cur.execute("""
@@ -78,18 +118,30 @@ def init_db():
         cur.execute("""
         CREATE TABLE IF NOT EXISTS imagenes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ruta TEXT NOT NULL,
+            ruta TEXT,
             fecha TEXT NOT NULL,
-            usuario TEXT
+            usuario TEXT,
+            data BLOB
         )""")
+        try:
+            cols = [c[1] for c in cur.execute("PRAGMA table_info(imagenes)").fetchall()]
+            if "data" not in cols:
+                cur.execute("ALTER TABLE imagenes ADD COLUMN data BLOB")
+        except sqlite3.OperationalError:
+            pass
     else:
         cur.execute("""
         CREATE TABLE IF NOT EXISTS imagenes (
             id SERIAL PRIMARY KEY,
-            ruta TEXT NOT NULL,
+            ruta TEXT,
             fecha TEXT NOT NULL,
-            usuario TEXT
+            usuario TEXT,
+            data BYTEA
         )""")
+        try:
+            cur.execute("ALTER TABLE imagenes ADD COLUMN IF NOT EXISTS data BYTEA")
+        except Exception:
+            pass
 
     if engine == "sqlite":
         cur.execute("""
@@ -176,8 +228,12 @@ def guardar_imagen(img_bgr, usuario=None):
     cur = conn.cursor()
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    cur.execute(_q(engine, "INSERT INTO imagenes (ruta, fecha, usuario) VALUES (?, ?, ?)"),
-                (filename, fecha, usuario))
+    try:
+        cur.execute(_q(engine, "INSERT INTO imagenes (ruta, fecha, usuario, data) VALUES (?, ?, ?, ?)"),
+                    (filename, fecha, usuario, None))
+    except Exception:
+        cur.execute(_q(engine, "INSERT INTO imagenes (ruta, fecha, usuario) VALUES (?, ?, ?)"),
+                    (filename, fecha, usuario))
     if engine == "sqlite":
         conn.commit()
     conn.close()
@@ -302,21 +358,27 @@ def comparar_rostro_con_perfil(username, img_bytes, umbral=0.0):
     return ok, mejor, "Coincidencia" if ok else "Rostro no coincide"
 
 def guardar_imagen_bytes(img_bytes, usuario=None):
-    if not os.path.exists(CAPTURAS_DIR):
-        os.makedirs(CAPTURAS_DIR)
-    filename = f"{CAPTURAS_DIR}/captura_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-    with open(filename, "wb") as f:
-        f.write(img_bytes)
     conn, engine = get_conn()
     cur = conn.cursor()
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur.execute(_q(engine, "INSERT INTO imagenes (ruta, fecha, usuario) VALUES (?, ?, ?)"),
-                (filename, fecha, usuario))
+    filename = None
+    if engine == "sqlite":
+        if not os.path.exists(CAPTURAS_DIR):
+            os.makedirs(CAPTURAS_DIR)
+        filename = f"{CAPTURAS_DIR}/captura_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+        with open(filename, "wb") as f:
+            f.write(img_bytes)
+    try:
+        cur.execute(_q(engine, "INSERT INTO imagenes (ruta, fecha, usuario, data) VALUES (?, ?, ?, ?)"),
+                    (filename, fecha, usuario, sqlite3.Binary(img_bytes) if engine == "sqlite" else img_bytes))
+    except Exception:
+        cur.execute(_q(engine, "INSERT INTO imagenes (ruta, fecha, usuario) VALUES (?, ?, ?)"),
+                    (filename, fecha, usuario))
     if engine == "sqlite":
         conn.commit()
     conn.close()
-    guardar_evento(usuario or "sistema", "Captura de imagen", filename)
-    return filename
+    guardar_evento(usuario or "sistema", "Captura de imagen", filename or "bytes")
+    return filename or "bytes"
 
 def guardar_foto_perfil_bytes(username, img_bytes):
     if not os.path.exists(FOTOS_ROSTRO_DIR):
@@ -327,13 +389,19 @@ def guardar_foto_perfil_bytes(username, img_bytes):
     conn, engine = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute(_q(engine, "UPDATE usuarios SET foto_rostro=? WHERE username=?"), (ruta, username))
-    except sqlite3.OperationalError:
+        cur.execute(_q(engine, "UPDATE usuarios SET foto_rostro=?, foto_data=? WHERE username=?"),
+                    (ruta, sqlite3.Binary(img_bytes) if engine == "sqlite" else img_bytes, username))
+    except Exception:
         try:
             if engine == "sqlite":
                 cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
+                cur.execute("ALTER TABLE usuarios ADD COLUMN foto_data BLOB")
                 conn.commit()
-                cur.execute(_q(engine, "UPDATE usuarios SET foto_rostro=? WHERE username=?"), (ruta, username))
+            else:
+                cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS foto_rostro TEXT")
+                cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS foto_data BYTEA")
+            cur.execute(_q(engine, "UPDATE usuarios SET foto_rostro=?, foto_data=? WHERE username=?"),
+                        (ruta, sqlite3.Binary(img_bytes) if engine == "sqlite" else img_bytes, username))
         except Exception:
             pass
     if engine == "sqlite":
@@ -398,24 +466,30 @@ def perfil_usuario(username):
         pass
 
     try:
-        cur.execute(_q(engine, "SELECT foto_rostro FROM usuarios WHERE username=?"), (username,))
+        cur.execute(_q(engine, "SELECT foto_rostro, foto_data FROM usuarios WHERE username=?"), (username,))
         data = cur.fetchone()
         foto_actual = data[0] if data else None
+        foto_bytes = data[1] if data and len(data) > 1 else None
     except sqlite3.OperationalError:
         try:
             if engine == "sqlite":
                 cur.execute("ALTER TABLE usuarios ADD COLUMN foto_rostro TEXT")
+                cur.execute("ALTER TABLE usuarios ADD COLUMN foto_data BLOB")
                 conn.commit()
-            cur.execute(_q(engine, "SELECT foto_rostro FROM usuarios WHERE username=?"), (username,))
+            cur.execute(_q(engine, "SELECT foto_rostro, foto_data FROM usuarios WHERE username=?"), (username,))
             data = cur.fetchone()
             foto_actual = data[0] if data else None
+            foto_bytes = data[1] if data and len(data) > 1 else None
         except sqlite3.OperationalError:
             foto_actual = None
+            foto_bytes = None
     conn.close()
 
     st.subheader("Foto de rostro guardada:")
     if foto_actual and os.path.exists(foto_actual):
         st.image(foto_actual, width=250)
+    elif foto_bytes:
+        st.image(foto_bytes, width=250)
     else:
         st.info("No tienes una foto registrada todavía.")
 
@@ -486,19 +560,18 @@ def controlar_luces(usuario):
     if "luz_on" not in st.session_state:
         st.session_state.luz_on = False
     colz1, colz2 = st.columns(2)
-    zona = colz1.selectbox("Zona", ["Sala", "Pasillo", "Jardín"], index=0)
+    zona = colz1.selectbox("Zona", ["Jardín", "Terraza"], index=0)
     modo = colz2.selectbox("Modo", ["Manual", "Automático"], index=0)
     intensidad = st.slider("Intensidad (%)", 0, 100, 50)
-
-    power_label = "⏻ Encender todas las luces" if not st.session_state.luz_on else "⏻ Apagar todas las luces"
-    if st.button(power_label, key="btn_power_luz"):
-        st.session_state.luz_on = not st.session_state.luz_on
-        if st.session_state.luz_on:
-            registrar_evento_luz(usuario, f"Encendido {zona} {intensidad}% {modo}")
-            st.success("Luz encendida")
-        else:
-            registrar_evento_luz(usuario, f"Apagado {zona} {modo}")
-            st.info("Luz apagada")
+    colp1, colp2 = st.columns(2)
+    if colp1.button("⏻ Encender todas las luces", key="btn_power_on"):
+        st.session_state.luz_on = True
+        registrar_evento_luz(usuario, f"Encendido {zona} {intensidad}% {modo}")
+        st.success("Luz encendida")
+    if colp2.button("Apagar todas las luces", key="btn_power_off"):
+        st.session_state.luz_on = False
+        registrar_evento_luz(usuario, f"Apagado {zona} {modo}")
+        st.info("Luz apagada")
     col1, col2 = st.columns(2)
     if col1.button("Encender"):
         registrar_evento_luz(usuario, f"Encendido {zona} {intensidad}% {modo}")
@@ -598,7 +671,7 @@ def simular_alerta(usuario):
         st.write(f"Siguiente en ~ {restante} s")
         if time.time() >= st.session_state.next_alert_ts:
             tipo_auto = random.choice(["Movimiento detectado", "Sensor fallo", "Intruso"])
-            zona = random.choice(["Sala", "Pasillo", "Jardín"])
+            zona = random.choice(["Jardín", "Terraza"])
             registrar_alerta(usuario, tipo_auto, f"{zona} - simulado")
             nivel = "alerta" if tipo_auto == "Intruso" else ("error" if tipo_auto == "Sensor fallo" else "warn")
             notificar(f"{tipo_auto} en {zona}", nivel)
@@ -642,7 +715,7 @@ def camara_interface(usuario):
         if archivo is not None:
             ruta = guardar_imagen_bytes(archivo.getvalue(), usuario)
             st.success(f"Foto guardada: {ruta}")
-            st.image(ruta)
+            st.image(archivo)
     with st.expander("Captura avanzada (OpenCV)"):
         idx = st.number_input("Índice de cámara", min_value=0, max_value=5, step=1, value=0)
         if st.button("Probar cámara"):
