@@ -492,7 +492,11 @@ def perfil_usuario(username):
     if foto_actual and os.path.exists(foto_actual):
         st.image(foto_actual, width=250)
     elif foto_bytes:
-        st.image(foto_bytes, width=250)
+        img0 = _bytes_to_bgr(foto_bytes)
+        if img0 is not None:
+            st.image(cv2.cvtColor(img0, cv2.COLOR_BGR2RGB), width=250)
+        else:
+            st.info("No tienes una foto registrada todavía.")
     else:
         st.info("No tienes una foto registrada todavía.")
 
@@ -512,13 +516,17 @@ def perfil_usuario(username):
         img_bytes = nueva_foto.getvalue()
         ruta = guardar_foto_perfil_bytes(username, img_bytes)
         st.success("Foto guardada exitosamente.")
-        st.image(img_bytes, width=250)
+        img1 = _bytes_to_bgr(img_bytes)
+        if img1 is not None:
+            st.image(cv2.cvtColor(img1, cv2.COLOR_BGR2RGB), width=250)
 
     if foto_cam is not None:
         img_bytes = foto_cam.getvalue()
         ruta = guardar_foto_perfil_bytes(username, img_bytes)
         st.success("Foto guardada exitosamente.")
-        st.image(img_bytes, width=250)
+        img2 = _bytes_to_bgr(img_bytes)
+        if img2 is not None:
+            st.image(cv2.cvtColor(img2, cv2.COLOR_BGR2RGB), width=250)
 
 # --------------------------
 # Interfaces UI
@@ -736,11 +744,13 @@ def camara_interface(usuario):
                 except Exception:
                     img_bytes = None
             if img_bytes:
-                st.image(img_bytes, caption=f"{usr or ''} • {fecha}", use_column_width=True)
-            elif ruta and os.path.exists(ruta):
-                st.image(ruta, caption=f"{usr or ''} • {fecha}", use_column_width=True)
-            else:
-                st.caption(f"Sin imagen • {fecha}")
+                imgx = _bytes_to_bgr(img_bytes)
+                if imgx is not None:
+                    st.image(cv2.cvtColor(imgx, cv2.COLOR_BGR2RGB), caption=f"{usr or ''} • {fecha}", use_column_width=True)
+                elif ruta and os.path.exists(ruta):
+                    st.image(ruta, caption=f"{usr or ''} • {fecha}", use_column_width=True)
+                else:
+                    st.caption(f"Sin imagen • {fecha}")
 
 # --------------------------
 # App principal
